@@ -34,5 +34,9 @@ class Movement(BaseModel):
     destination: str = ""
     note: str = ""
     unit_price: float | None = None
+    # Giriş movements: product purchase price before/after the weighted-average update,
+    # so deleting the movement can restore the previous price.
+    price_before: float | None = None
+    price_after: float | None = None
     created_by: str = ""
     created_at: datetime = Field(default_factory=utcnow)
