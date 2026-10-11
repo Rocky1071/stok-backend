@@ -1,33 +1,46 @@
-"""Units: "adet" (pieces) and "kg" (weight).
+"""Units: "adet" (pieces), "kg" (weight), "lt" (volume) and "m" (length).
 
-Stock for a kg product is stored as a float in KILOGRAMS, rounded to 3 decimals (= gram
-precision), so "10 kg 500 g" is 10.5 and the value reads naturally in MySQL and Excel.
-Piece products are whole numbers. QTY_PRECISION keeps float drift out of the database.
+Stock is stored as a float in the BASE unit of each type:
+  - kg: kilograms, rounded to 3 decimals (= gram precision), "10 kg 500 g" is 10.5
+  - lt: litres, rounded to 3 decimals (= mL precision), "2 L 250 mL" is 2.25
+  - m:  metres, rounded to 2 decimals (= cm precision), "1 m 50 cm" is 1.5
+Piece products are whole numbers. Rounding keeps float drift out of the database.
 """
 
 ADET = "adet"
 KG = "kg"
-UNITS = (ADET, KG)
-UNIT_LABELS = {ADET: "Adet", KG: "Kilogram"}
+LT = "lt"
+M = "m"
+UNITS = (ADET, KG, LT, M)
+UNIT_LABELS = {ADET: "Adet", KG: "Kilogram", LT: "Litre", M: "Metre"}
+
+# Fractional units: unit -> (decimals, small units per 1 base unit, big label, small label)
+_SPLIT = {
+    KG: (3, 1000, "kg", "g"),
+    LT: (3, 1000, "L", "mL"),
+    M: (2, 100, "m", "cm"),
+}
 
 
 def normalize_qty(quantity: float, unit: str) -> float:
-    """Round to the unit's precision: whole pieces, or gram-precision kilograms."""
-    if unit == KG:
-        return round(float(quantity), 3)
+    """Round to the unit's precision: whole pieces, or the fractional unit's decimals."""
+    if unit in _SPLIT:
+        decimals = _SPLIT[unit][0]
+        return round(float(quantity), decimals)
     return float(int(round(float(quantity))))
 
 
 def format_qty(quantity: float, unit: str) -> str:
-    """Human string: 9.5 kg -> '9 kg 500 g'; 24 adet -> '24 adet'."""
-    if unit == KG:
-        total_grams = int(round(float(quantity) * 1000))
-        sign = "-" if total_grams < 0 else ""
-        total_grams = abs(total_grams)
-        kilos, grams = divmod(total_grams, 1000)
-        if kilos and grams:
-            return f"{sign}{kilos} kg {grams} g"
-        if kilos:
-            return f"{sign}{kilos} kg"
-        return f"{sign}{grams} g"
+    """Human string: 9.5 kg -> '9 kg 500 g'; 1.25 m -> '1 m 25 cm'; 24 adet -> '24 adet'."""
+    if unit in _SPLIT:
+        _, factor, big, small = _SPLIT[unit]
+        total = int(round(float(quantity) * factor))
+        sign = "-" if total < 0 else ""
+        total = abs(total)
+        whole, part = divmod(total, factor)
+        if whole and part:
+            return f"{sign}{whole} {big} {part} {small}"
+        if whole:
+            return f"{sign}{whole} {big}"
+        return f"{sign}{part} {small}"
     return f"{int(round(float(quantity)))} adet"
