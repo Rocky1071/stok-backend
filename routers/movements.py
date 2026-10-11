@@ -16,6 +16,16 @@ from models.movement import Movement, MovementCreate
 router = APIRouter(prefix="/movements", tags=["movements"])
 
 
+def weighted_avg_price(old_qty: float, old_price: float, in_qty: float, in_price: float) -> float:
+    """Ağırlıklı ortalama alış fiyatı: (eski stok x eski fiyat + giren x giriş fiyatı) / toplam stok."""
+    old_qty = max(float(old_qty or 0), 0.0)  # eksi/boş stok maliyeti bozmasın
+    old_price = float(old_price or 0)
+    total_qty = old_qty + float(in_qty)
+    if total_qty <= 0:
+        return float(in_price)
+    return round((old_qty * old_price + float(in_qty) * float(in_price)) / total_qty, 4)
+
+
 async def _touch_product(product_id: str) -> dict | None:
     """Bump updated_at and return the fresh product doc (for the MySQL mirror)."""
     from pymongo import ReturnDocument
@@ -65,9 +75,17 @@ async def create_movement(input: MovementCreate, user: dict = Depends(require_pe
         )
 
     delta = {"giris": qty, "satis": -qty, "kullanim": -qty, "transfer": 0}[input.type]
+    updates: dict = {}
+    price_before = price_after = None
     if delta:
-        new_qty = normalize_qty(current + delta, unit)
-        await db.products.update_one({"id": input.product_id}, {"$set": {"quantity": new_qty}})
+        updates["quantity"] = normalize_qty(current + delta, unit)
+    if input.type == "giris" and input.unit_price is not None:
+        # Ortalamayı stok artırılmadan ÖNCEKİ miktarla hesapla (current = giriş öncesi stok).
+        price_before = float(product.get("purchase_price", 0) or 0)
+        price_after = weighted_avg_price(current, price_before, qty, input.unit_price)
+        updates["purchase_price"] = price_after
+    if updates:
+        await db.products.update_one({"id": input.product_id}, {"$set": updates})
 
     movement = Movement(
         product_id=input.product_id,
@@ -79,6 +97,8 @@ async def create_movement(input: MovementCreate, user: dict = Depends(require_pe
         destination=input.destination,
         note=input.note,
         unit_price=input.unit_price,
+        price_before=price_before,
+        price_after=price_after,
         created_by=user.get("email", ""),
     )
     await db.movements.insert_one(movement.model_dump())
@@ -101,9 +121,19 @@ async def delete_movement(movement_id: str, user: dict = Depends(require_perm(MO
         unit = product.get("unit", "adet")
         qty = float(doc["quantity"])
         reverse = {"giris": -qty, "satis": qty, "kullanim": qty, "transfer": 0}[doc["type"]]
+        updates: dict = {}
         if reverse:
-            new_qty = normalize_qty(max(0.0, float(product.get("quantity", 0)) + reverse), unit)
-            await db.products.update_one({"id": product["id"]}, {"$set": {"quantity": new_qty}})
+            updates["quantity"] = normalize_qty(max(0.0, float(product.get("quantity", 0)) + reverse), unit)
+        # Giriş silinirse, alış fiyatı o girişten beri değişmediyse eski fiyata geri dön.
+        if (
+            doc["type"] == "giris"
+            and doc.get("price_before") is not None
+            and doc.get("price_after") is not None
+            and abs(float(product.get("purchase_price", 0) or 0) - float(doc["price_after"])) < 1e-6
+        ):
+            updates["purchase_price"] = float(doc["price_before"])
+        if updates:
+            await db.products.update_one({"id": product["id"]}, {"$set": updates})
 
     await db.movements.delete_one({"id": movement_id})
     fresh = await _touch_product(doc["product_id"]) if product else None
