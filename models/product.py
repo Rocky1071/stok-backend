@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 
 from lib.dates import utcnow
 
-# "adet" = pieces (whole numbers), "kg" = weight in kilograms (gram precision).
-Unit = Literal["adet", "kg"]
+# "adet" = pieces, "kg" = kilograms, "lt" = litres, "m" = metres.
+Unit = Literal["adet", "kg", "lt", "m"]
 
 
 class ProductCreate(BaseModel):
