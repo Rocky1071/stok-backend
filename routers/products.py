@@ -57,6 +57,7 @@ async def create_product(input: ProductCreate, user: dict = Depends(require_perm
             unit=product.unit,
             date=today_iso(),
             note="Açılış stoğu",
+            unit_price=product.purchase_price,
             created_by=user.get("email", ""),
         )
         await db.movements.insert_one(opening.model_dump())
