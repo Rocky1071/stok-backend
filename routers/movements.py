@@ -16,14 +16,27 @@ from models.movement import Movement, MovementCreate
 router = APIRouter(prefix="/movements", tags=["movements"])
 
 
-def weighted_avg_price(old_qty: float, old_price: float, in_qty: float, in_price: float) -> float:
-    """Ağırlıklı ortalama alış fiyatı: (eski stok x eski fiyat + giren x giriş fiyatı) / toplam stok."""
-    old_qty = max(float(old_qty or 0), 0.0)  # eksi/boş stok maliyeti bozmasın
-    old_price = float(old_price or 0)
-    total_qty = old_qty + float(in_qty)
+async def lifetime_avg_price(product: dict, in_qty: float, in_price: float) -> float:
+    """Ürünün TÜM alışlarının ortalama birim fiyatı (stok 0 olsa bile geçmiş alışlar hesaba girer).
+
+    ortalama = (önceki tüm girişlerin miktar x fiyat toplamı + yeni giriş) / (toplam giriş miktarı)
+    Fiyatı kayıtlı olmayan eski girişler, ürünün şu anki alış fiyatıyla değerlenir.
+    """
+    fallback = float(product.get("purchase_price", 0) or 0)
+    entries = await db.movements.find(
+        {"product_id": product["id"], "type": "giris"}, {"quantity": 1, "unit_price": 1}
+    ).to_list(20000)
+    total_qty = float(in_qty)
+    total_cost = float(in_qty) * float(in_price)
+    for m in entries:
+        q = float(m.get("quantity", 0) or 0)
+        p = m.get("unit_price")
+        p = fallback if p is None else float(p)
+        total_qty += q
+        total_cost += q * p
     if total_qty <= 0:
         return float(in_price)
-    return round((old_qty * old_price + float(in_qty) * float(in_price)) / total_qty, 4)
+    return round(total_cost / total_qty, 4)
 
 
 async def _touch_product(product_id: str) -> dict | None:
@@ -80,9 +93,9 @@ async def create_movement(input: MovementCreate, user: dict = Depends(require_pe
     if delta:
         updates["quantity"] = normalize_qty(current + delta, unit)
     if input.type == "giris" and input.unit_price is not None:
-        # Ortalamayı stok artırılmadan ÖNCEKİ miktarla hesapla (current = giriş öncesi stok).
+        # Ortalama, bu girişten ÖNCEKİ tüm alışlarla birlikte hesaplanır (stok 0 olsa bile).
         price_before = float(product.get("purchase_price", 0) or 0)
-        price_after = weighted_avg_price(current, price_before, qty, input.unit_price)
+        price_after = await lifetime_avg_price(product, qty, input.unit_price)
         updates["purchase_price"] = price_after
     if updates:
         await db.products.update_one({"id": input.product_id}, {"$set": updates})
